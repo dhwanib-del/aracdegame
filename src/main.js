@@ -13,6 +13,39 @@ function mode(){app.className='page page-select';app.innerHTML='<section class="
 
 function camera(){app.className='page page-camera';app.innerHTML='<section class="camera-layout"><span class="overline">02 / CALIBRATE</span><h1>CAMERA SETUP</h1><p>Use your hand to play. We’ll track your movements.</p><div class="camera-box" id="cam"><span id="camhint">YOUR CAMERA IS OFF. SELECT ENABLE CAMERA TO BEGIN.</span></div><div class="tracking-status" id="track">CAMERA NOT STARTED</div><div class="camera-config"><label>INPUT <span>ONE HAND</span></label><label>MIRROR PREVIEW <input id="mirror" type="checkbox" checked></label></div><div class="camera-actions"><button class="blue-button" id="enable">ENABLE CAMERA</button><button class="blue-button" id="continue" disabled>CONTINUE →</button></div><button class="camera-alternative" id="manual">OR PLAY WITH MOUSE INSTEAD</button><p class="camera-privacy">Your camera is used only to follow your hand. Nothing is recorded or uploaded.</p></section>';$('#enable').onclick=startCamera;$('#continue').onclick=()=>nav('ready');$('#manual').onclick=()=>{S.mode='manual';stopCamera();nav('ready')};$('#mirror').onchange=e=>{if(S.video)S.video.style.transform=e.target.checked?'scaleX(-1)':'none'}}
 
+async function startCamera(){
+ const enable=$('#enable'),status=$('#track'),continueButton=$('#continue'),box=$('#cam');
+ const setStatus=msg=>{if(status)status.textContent=msg};
+ if(enable){enable.disabled=true;enable.textContent='STARTING CAMERA…'}
+ try{
+  if(!navigator.mediaDevices?.getUserMedia)throw new Error('Camera requires HTTPS and a supported browser.');
+  setStatus('REQUESTING CAMERA PERMISSION');
+  const stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:'user',width:{ideal:640},height:{ideal:480}}});
+  S.stream=stream;
+  const video=document.createElement('video');video.autoplay=true;video.muted=true;video.playsInline=true;video.srcObject=stream;
+  box.replaceChildren(video);S.video=video;await video.play();
+  setStatus('CAMERA ACTIVE · LOADING HAND TRACKING');
+  const {FilesetResolver,HandLandmarker}=await import('@mediapipe/tasks-vision');
+  const files=await FilesetResolver.forVisionTasks('/mediapipe/wasm');
+  setStatus('LOADING LOCAL HAND MODEL');
+  let landmarker;
+  const options=(delegate)=>({baseOptions:{modelAssetPath:'/mediapipe/models/hand_landmarker.task',delegate},runningMode:'VIDEO',numHands:1});
+  try{landmarker=await HandLandmarker.createFromOptions(files,options('GPU'))}
+  catch(gpuError){setStatus('USING COMPATIBILITY TRACKING MODE');landmarker=await HandLandmarker.createFromOptions(files,options('CPU'))}
+  S.handTracker=landmarker;
+  setStatus('CAMERA READY · SHOW ONE HAND');
+  if(enable){enable.textContent='CAMERA ON';enable.disabled=true}
+  if(continueButton)continueButton.disabled=false;
+  trackHand();
+ }catch(e){
+  console.error('Camera setup failed:',e);
+  setStatus('CAMERA SETUP FAILED · '+e.message);
+  stopCamera();
+  if(enable){enable.disabled=false;enable.textContent='RETRY CAMERA'}
+  if(continueButton)continueButton.disabled=true;
+ }
+}
+
 function trackHand(){if(!S.handTracker||!S.video)return;let lastInference=0,lastFrame=-1,failures=0;const loop=()=>{if(!S.video||!S.handTracker)return;const t=performance.now();if(t-lastInference>=40&&S.video.readyState>=2&&S.video.currentTime!==lastFrame){lastFrame=S.video.currentTime;lastInference=t;try{const r=S.handTracker.detectForVideo(S.video,t),hand=r.landmarks?.[0];S.tracking=!!hand;failures=0;if(hand){const thumb=hand[4],index=hand[8],palm=hand[9],sideA=hand[5],sideB=hand[17];const width=Math.hypot(sideA.x-sideB.x,sideA.y-sideB.y)||.1;const d=Math.hypot(thumb.x-index.x,thumb.y-index.y)/width;const was=S.pinch;S.pinch=d<(was?.53:.32);S.aim=Math.max(.05,Math.min(.95,1-palm.x));S.power=Math.max(.12,Math.min(.95,1-palm.y));S.lastHandX=palm.x;S.lastHandY=palm.y;if(was&&!S.pinch&&S.screen==='game'&&!S.paused)shoot();const status=$('#track');if(status)status.textContent='HAND DETECTED · '+(S.pinch?'PINCHED':'OPEN')}else{S.pinch=false;const status=$('#track');if(status)status.textContent='LOOKING FOR HAND · MOVE INTO FRAME'}}catch(e){failures++;console.error('Hand tracking error',e);if(failures>=3){const status=$('#track');if(status)status.textContent='TRACKING INTERRUPTED · TRY MOUSE MODE';S.tracking=false}}}S.cameraRaf=requestAnimationFrame(loop)};S.cameraRaf=requestAnimationFrame(loop)}
 function stopCamera(){cancelAnimationFrame(S.cameraRaf);S.cameraRaf=0;S.handTracker?.close?.();S.handTracker=null;S.video=null;S.stream?.getTracks().forEach(t=>t.stop());S.stream=null;S.tracking=false}
 function ready(){app.className='page page-ready';app.innerHTML='<section class="ready-layout"><span class="overline">03 / READY TO PLAY</span><h1>'+(S.game==='hoops'?'BASKETBALL':'SKEE-BALL')+'</h1><div class="ready-graphic">'+(S.game==='hoops'?"<svg viewBox=\"0 0 100 100\" aria-hidden=\"true\" class=\"pixel-icon\"><circle cx=\"50\" cy=\"50\" r=\"38\" fill=\"#171717\"/><path d=\"M50 12v76M12 50h76M23 22Q74 50 23 78M77 22Q26 50 77 78\" fill=\"none\" stroke=\"#f15b40\" stroke-width=\"8\"/></svg>":"<svg viewBox=\"0 0 100 100\" aria-hidden=\"true\" class=\"pixel-icon\"><rect x=\"12\" y=\"12\" width=\"76\" height=\"76\" rx=\"3\" fill=\"#151515\"/><circle cx=\"50\" cy=\"50\" r=\"31\" stroke=\"#fff5df\" stroke-width=\"9\" fill=\"none\"/><circle cx=\"50\" cy=\"50\" r=\"14\" stroke=\"#fff5df\" stroke-width=\"8\" fill=\"none\"/><circle cx=\"50\" cy=\"50\" r=\"4\" fill=\"#fff5df\"/></svg>")+'</div><h2>'+(S.game==='hoops'?'60 SECONDS. UNLIMITED SHOTS.':'9 BALLS. MAKE THEM COUNT.')+'</h2><p>'+(S.mode==='camera'?'MOVE YOUR HAND TO AIM. PINCH AND OPEN YOUR FINGERS TO RELEASE.':'MOVE YOUR POINTER TO AIM AND CONTROL POWER. CLICK OR PRESS SPACE TO LAUNCH.')+'</p><button class="dark-button" id="begin">START GAME →</button><button class="back-link" id="back">← CHANGE CONTROLS</button></section>';$('#begin').onclick=()=>{reset();nav('game')};$('#back').onclick=()=>nav('mode')}
