@@ -46,17 +46,71 @@ async function startCamera(){
  }
 }
 
-function trackHand(){if(!S.handTracker||!S.video)return;let lastInference=0,lastFrame=-1,failures=0;const loop=()=>{if(!S.video||!S.handTracker)return;const t=performance.now();if(t-lastInference>=40&&S.video.readyState>=2&&S.video.currentTime!==lastFrame){lastFrame=S.video.currentTime;lastInference=t;try{const r=S.handTracker.detectForVideo(S.video,t),hand=r.landmarks?.[0];S.tracking=!!hand;failures=0;if(hand){const thumb=hand[4],index=hand[8],palm=hand[9],sideA=hand[5],sideB=hand[17];const width=Math.hypot(sideA.x-sideB.x,sideA.y-sideB.y)||.1;const d=Math.hypot(thumb.x-index.x,thumb.y-index.y)/width;const was=S.pinch;S.pinch=d<(was?.53:.32);S.aim=Math.max(.05,Math.min(.95,1-palm.x));S.power=Math.max(.12,Math.min(.95,1-palm.y));S.lastHandX=palm.x;S.lastHandY=palm.y;if(was&&!S.pinch&&S.screen==='game'&&!S.paused)shoot();const status=$('#track');if(status)status.textContent='HAND DETECTED · '+(S.pinch?'PINCHED':'OPEN')}else{S.pinch=false;const status=$('#track');if(status)status.textContent='LOOKING FOR HAND · MOVE INTO FRAME'}}catch(e){failures++;console.error('Hand tracking error',e);if(failures>=3){const status=$('#track');if(status)status.textContent='TRACKING INTERRUPTED · TRY MOUSE MODE';S.tracking=false}}}S.cameraRaf=requestAnimationFrame(loop)};S.cameraRaf=requestAnimationFrame(loop)}
-function stopCamera(){cancelAnimationFrame(S.cameraRaf);S.cameraRaf=0;S.handTracker?.close?.();S.handTracker=null;S.video=null;S.stream?.getTracks().forEach(t=>t.stop());S.stream=null;S.tracking=false}
+const gesture={state:'open',closedFrames:0,openFrames:0,lastSeen:0,lastRelease:0,palmX:.5,palmY:.6,pinchRatio:1,history:[]};
+function trackHand(){
+ if(!S.handTracker||!S.video)return;
+ cancelAnimationFrame(S.cameraRaf);
+ let lastInference=0,lastVideoTime=-1,failures=0;
+ const loop=()=>{
+  if(!S.video||!S.handTracker||!S.stream?.active)return;
+  const now=performance.now();
+  if(now-lastInference>=40&&S.video.readyState>=2&&S.video.currentTime!==lastVideoTime){
+   lastInference=now;lastVideoTime=S.video.currentTime;
+   try{
+    const detection=S.handTracker.detectForVideo(S.video,now);
+    const hand=detection.landmarks?.[0];
+    if(hand){
+     failures=0;S.tracking=true;gesture.lastSeen=now;
+     const thumb=hand[4],index=hand[8],knuckle=hand[5],pinkie=hand[17];
+     const width=Math.max(.035,Math.hypot(knuckle.x-pinkie.x,knuckle.y-pinkie.y));
+     const ratio=Math.hypot(thumb.x-index.x,thumb.y-index.y)/width;
+     gesture.pinchRatio=ratio;
+     const x=1-(index.x+thumb.x)/2,y=(index.y+thumb.y)/2;
+     gesture.palmX=gesture.palmX*.58+x*.42;
+     gesture.palmY=gesture.palmY*.58+y*.42;
+     S.aim=Math.max(.05,Math.min(.95,gesture.palmX));
+     S.power=Math.max(.18,Math.min(.95,1-gesture.palmY));
+     gesture.history.push({t:now,x:gesture.palmX,y:gesture.palmY});
+     while(gesture.history.length>0&&now-gesture.history[0].t>220)gesture.history.shift();
+     const closed=ratio<.38;
+     const opened=ratio>.62;
+     gesture.closedFrames=closed?gesture.closedFrames+1:0;
+     gesture.openFrames=opened?gesture.openFrames+1:0;
+     if(gesture.state==='open'&&gesture.closedFrames>=2){
+      gesture.state='holding';gesture.openFrames=0;S.pinch=true;
+     }else if(gesture.state==='holding'&&gesture.openFrames>=2){
+      gesture.state='open';gesture.closedFrames=0;S.pinch=false;
+      if(S.screen==='game'&&!S.paused&&now-gesture.lastRelease>450){
+       gesture.lastRelease=now;
+       shoot();
+      }
+     }
+     const status=$('#track');
+     if(status)status.textContent=gesture.state==='holding'?'HAND TRACKED · BALL GRABBED · OPEN TO THROW':'HAND TRACKED · PINCH THUMB AND INDEX TO GRAB';
+     const hint=$('#gamehint');
+     if(hint&&S.screen==='game'&&!S.paused)hint.textContent=gesture.state==='holding'?'BALL HELD · OPEN FINGERS TO RELEASE':'HAND TRACKED · PINCH TO PICK UP THE BALL';
+    }else{
+     S.tracking=false;
+     if(now-gesture.lastSeen>250){gesture.state='open';S.pinch=false;gesture.history.length=0;gesture.closedFrames=0;gesture.openFrames=0}
+     const status=$('#track');if(status)status.textContent='NO HAND DETECTED · MOVE YOUR HAND INTO VIEW';
+    }
+   }catch(e){failures++;console.error('Hand tracking failure',e);if(failures>=3){const status=$('#track');if(status)status.textContent='TRACKING ERROR · '+e.message}}
+  }
+  S.cameraRaf=requestAnimationFrame(loop);
+ };
+ S.cameraRaf=requestAnimationFrame(loop);
+}
+function stopCamera(){gesture.state='open';gesture.history.length=0;gesture.closedFrames=0;gesture.openFrames=0;S.pinch=false;cancelAnimationFrame(S.cameraRaf);S.cameraRaf=0;S.handTracker?.close?.();S.handTracker=null;S.video=null;S.stream?.getTracks().forEach(t=>t.stop());S.stream=null;S.tracking=false}
 function ready(){app.className='page page-ready';app.innerHTML='<section class="ready-layout"><span class="overline">03 / READY TO PLAY</span><h1>'+(S.game==='hoops'?'BASKETBALL':'SKEE-BALL')+'</h1><div class="ready-graphic">'+(S.game==='hoops'?"<svg viewBox=\"0 0 100 100\" aria-hidden=\"true\" class=\"pixel-icon\"><circle cx=\"50\" cy=\"50\" r=\"38\" fill=\"#171717\"/><path d=\"M50 12v76M12 50h76M23 22Q74 50 23 78M77 22Q26 50 77 78\" fill=\"none\" stroke=\"#f15b40\" stroke-width=\"8\"/></svg>":"<svg viewBox=\"0 0 100 100\" aria-hidden=\"true\" class=\"pixel-icon\"><rect x=\"12\" y=\"12\" width=\"76\" height=\"76\" rx=\"3\" fill=\"#151515\"/><circle cx=\"50\" cy=\"50\" r=\"31\" stroke=\"#fff5df\" stroke-width=\"9\" fill=\"none\"/><circle cx=\"50\" cy=\"50\" r=\"14\" stroke=\"#fff5df\" stroke-width=\"8\" fill=\"none\"/><circle cx=\"50\" cy=\"50\" r=\"4\" fill=\"#fff5df\"/></svg>")+'</div><h2>'+(S.game==='hoops'?'60 SECONDS. UNLIMITED SHOTS.':'9 BALLS. MAKE THEM COUNT.')+'</h2><p>'+(S.mode==='camera'?'MOVE YOUR HAND TO AIM. PINCH AND OPEN YOUR FINGERS TO RELEASE.':'MOVE YOUR POINTER TO AIM AND CONTROL POWER. CLICK OR PRESS SPACE TO LAUNCH.')+'</p><button class="dark-button" id="begin">START GAME →</button><button class="back-link" id="back">← CHANGE CONTROLS</button></section>';$('#begin').onclick=()=>{reset();nav('game')};$('#back').onclick=()=>nav('mode')}
 
-function reset(){stopGame();S.score=0;S.remaining=60;S.balls=9;S.shots=0;S.hits=0;S.streak=0;S.longest=0;S.shooting=false;S.paused=false;S.result='';S.power=.55;S.aim=.5}
+function reset(){stopGame();gesture.state='open';gesture.closedFrames=0;gesture.openFrames=0;S.score=0;S.remaining=60;S.balls=9;S.shots=0;S.hits=0;S.streak=0;S.longest=0;S.shooting=false;S.paused=false;S.result='';S.power=.55;S.aim=.5}
 let ctx,canvas,last=0,raf=0,clockInterval=0,shots=[];
 function stopGame(){S.running=false;cancelAnimationFrame(raf);clearInterval(clockInterval);shots=[]}
-function game(){app.className='page page-game';app.innerHTML='<div class="editorial-game"><div class="editorial-hud"><div class="hud-title"><span class="overline">NOW PLAYING</span><h1>'+(S.game==='hoops'?'BASKETBALL':'SKEE-BALL')+'</h1></div><div class="hud-stats"><div><label>'+(S.game==='hoops'?'TIME':'BALLS LEFT')+'</label><strong id="time">'+(S.game==='hoops'?'60':'9')+'</strong></div><div><label>SCORE</label><strong id="score">0</strong></div><div class="hud-third"><label>'+(S.game==='hoops'?'STREAK':'BEST')+'</label><strong id="third">'+(S.game==='hoops'?'0':S.best.skee||0)+'</strong></div></div><button class="end-game" id="exit">END GAME</button></div><div class="stage"><canvas id="canvas" width="1000" height="562" aria-label="Game playfield"></canvas><div id="gamecam"></div></div><div class="game-controls"><p id="gamehint">MOVE TO AIM · CLICK OR SPACE TO THROW · P TO PAUSE</p><button id="pause">PAUSE</button><label>POWER <span class="meter"><span class="meter-fill" id="power"></span></span></label></div></div>';canvas=$('#canvas');ctx=canvas.getContext('2d');canvas.addEventListener('pointermove',e=>{if(S.mode==='camera'&&S.tracking)return;let b=canvas.getBoundingClientRect();S.aim=Math.max(.05,Math.min(.95,(e.clientX-b.left)/b.width));S.power=Math.max(.15,Math.min(.95,1-(e.clientY-b.top)/b.height))});canvas.addEventListener('pointerdown',()=>{if(!S.paused)shoot()});$('#pause').onclick=pause;$('#exit').onclick=()=>nav('lobby');if(S.mode==='camera'&&S.video){let v=S.video;v.remove();v.style.cssText='';$('#gamecam').append(v)}S.running=true;last=performance.now();raf=requestAnimationFrame(draw);if(S.game==='hoops')clockInterval=setInterval(()=>{if(S.paused||!S.running)return;S.remaining=Math.max(0,S.remaining-1);if(S.remaining===0){S.running=false;setTimeout(()=>finish(),1000)}update()},1000)}
+function game(){app.className='page page-game';app.innerHTML='<div class="editorial-game"><div class="editorial-hud"><div class="hud-title"><span class="overline">NOW PLAYING</span><h1>'+(S.game==='hoops'?'BASKETBALL':'SKEE-BALL')+'</h1></div><div class="hud-stats"><div><label>'+(S.game==='hoops'?'TIME':'BALLS LEFT')+'</label><strong id="time">'+(S.game==='hoops'?'60':'9')+'</strong></div><div><label>SCORE</label><strong id="score">0</strong></div><div class="hud-third"><label>'+(S.game==='hoops'?'STREAK':'BEST')+'</label><strong id="third">'+(S.game==='hoops'?'0':S.best.skee||0)+'</strong></div></div><button class="end-game" id="exit">END GAME</button></div><div class="stage"><canvas id="canvas" width="1000" height="562" aria-label="Game playfield"></canvas><div id="gamecam"></div></div><div class="game-controls"><p id="gamehint">MOVE TO AIM · CLICK OR SPACE TO THROW · P TO PAUSE</p><button id="pause">PAUSE</button><label>POWER <span class="meter"><span class="meter-fill" id="power"></span></span></label></div></div>';canvas=$('#canvas');ctx=canvas.getContext('2d');canvas.addEventListener('pointermove',e=>{if(S.mode==='camera'&&S.tracking)return;let b=canvas.getBoundingClientRect();S.aim=Math.max(.05,Math.min(.95,(e.clientX-b.left)/b.width));S.power=Math.max(.15,Math.min(.95,1-(e.clientY-b.top)/b.height))});canvas.addEventListener('pointerdown',()=>{if(!S.paused)shoot()});$('#pause').onclick=pause;$('#exit').onclick=()=>nav('lobby');if(S.mode==='camera'&&S.video){let v=S.video;v.remove();v.style.cssText='';$('#gamecam').append(v);v.play().catch(err=>console.warn('Camera resume failed',err))}S.running=true;last=performance.now();raf=requestAnimationFrame(draw);if(S.game==='hoops')clockInterval=setInterval(()=>{if(S.paused||!S.running)return;S.remaining=Math.max(0,S.remaining-1);if(S.remaining===0){S.running=false;setTimeout(()=>finish(),1000)}update()},1000)}
 function update(){let el=$('#score');if(!el)return;el.textContent=S.score;$('#time').textContent=S.game==='hoops'?S.remaining:S.balls;$('#third').textContent=S.game==='hoops'?S.streak:(S.best.skee||0);$('#power').style.width=(S.power*100)+'%'}
 function draw(now){if(!S.running)return;let dt=Math.min((now-last)/1000,.06);last=now;if(!S.paused){try{renderStage(dt);update()}catch(err){console.error('Game rendering error',err);S.running=false;const e=$('#gamehint');if(e)e.textContent='GAME ERROR: '+err.message+' — USE END GAME TO RETURN';return}}raf=requestAnimationFrame(draw)}
-function renderStage(dt){let w=1000,h=562;ctx.clearRect(0,0,w,h);let grad=ctx.createLinearGradient(0,0,0,h);grad.addColorStop(0,'#35263f');grad.addColorStop(1,'#161824');ctx.fillStyle=grad;ctx.fillRect(0,0,w,h);ctx.globalAlpha=.25;for(let i=0;i<20;i++){ctx.fillStyle='#ffde9c';ctx.beginPath();ctx.arc((i*73+22)%1000,55+(i*37)%225,2,0,7);ctx.fill()}ctx.globalAlpha=1;if(S.game==='hoops')renderHoops();else renderSkee();for(let i=shots.length-1;i>=0;i--){let s=shots[i];s.t+=dt;let p=s.t/s.d;let x=s.x+(s.targetX-s.x)*p;let y=s.y+(s.targetY-s.y)*p-180*Math.sin(Math.PI*p);ctx.fillStyle=S.game==='hoops'?'#eb8c43':'#eee6d6';ctx.beginPath();ctx.arc(x,y,20*(1-Math.max(0,p-1)*.7),0,7);ctx.fill();if(S.game==='hoops'){ctx.strokeStyle='#853b23';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(x-12,y-12);ctx.lineTo(x+12,y+12);ctx.moveTo(x-12,y+12);ctx.lineTo(x+12,y-12);ctx.stroke()}if(p>=1){resolve(s);shots.splice(i,1)}}let x=100+S.aim*800;ctx.strokeStyle='#f2be57bb';ctx.setLineDash([6,10]);ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(x,h-56);ctx.lineTo(S.game==='hoops'?500:500,S.game==='hoops'?195:195);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle='#f2be57';ctx.beginPath();ctx.arc(x,h-52,23,0,7);ctx.fill();ctx.fillStyle='#612f2a';ctx.font='30px sans-serif';ctx.textAlign='center';ctx.fillText(S.game==='hoops'?'●':'◉',x+1,h-43);ctx.fillStyle='#f7e8c6';ctx.font='bold 15px "DM Sans"';ctx.fillText(S.result,500,65)}
+function renderStage(dt){let w=1000,h=562;ctx.clearRect(0,0,w,h);let grad=ctx.createLinearGradient(0,0,0,h);grad.addColorStop(0,'#35263f');grad.addColorStop(1,'#161824');ctx.fillStyle=grad;ctx.fillRect(0,0,w,h);ctx.globalAlpha=.25;for(let i=0;i<20;i++){ctx.fillStyle='#ffde9c';ctx.beginPath();ctx.arc((i*73+22)%1000,55+(i*37)%225,2,0,7);ctx.fill()}ctx.globalAlpha=1;if(S.game==='hoops')renderHoops();else renderSkee();for(let i=shots.length-1;i>=0;i--){let s=shots[i];s.t+=dt;let p=s.t/s.d;let x=s.x+(s.targetX-s.x)*p;let y=s.y+(s.targetY-s.y)*p-180*Math.sin(Math.PI*p);ctx.fillStyle=S.game==='hoops'?'#eb8c43':'#eee6d6';ctx.beginPath();ctx.arc(x,y,20*(1-Math.max(0,p-1)*.7),0,7);ctx.fill();if(S.game==='hoops'){ctx.strokeStyle='#853b23';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(x-12,y-12);ctx.lineTo(x+12,y+12);ctx.moveTo(x-12,y+12);ctx.lineTo(x+12,y-12);ctx.stroke()}if(p>=1){resolve(s);shots.splice(i,1)}}let x=100+S.aim*800;ctx.strokeStyle='#f2be57bb';ctx.setLineDash([6,10]);ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(x,h-56);ctx.lineTo(S.game==='hoops'?500:500,S.game==='hoops'?195:195);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle='#f2be57';ctx.beginPath();ctx.arc(x,h-52,23,0,7);ctx.fill();ctx.fillStyle='#612f2a';ctx.font='30px sans-serif';ctx.textAlign='center';ctx.fillText(S.game==='hoops'?'●':'◉',x+1,h-43);ctx.fillStyle='#f7e8c6';ctx.font='bold 15px "DM Sans"';ctx.fillText(S.result,500,65);if(S.mode==='camera'&&S.tracking){const hx=100+800*S.aim,hy=110+400*gesture.palmY;ctx.save();ctx.strokeStyle=gesture.state==='holding'?'#67e9bb':'#f8ebc8';ctx.lineWidth=3;ctx.beginPath();ctx.arc(hx,hy,gesture.state==='holding'?32:18,0,Math.PI*2);ctx.stroke();ctx.fillStyle='#fff';ctx.font='bold 13px DM Sans';ctx.fillText(gesture.state==='holding'?'HOLDING':'HAND',hx,hy-43);if(gesture.state==='holding'){drawBallVisual(hx,hy)}ctx.restore()}}
+function drawBallVisual(x,y){ctx.fillStyle=S.game==='hoops'?'#e77b3c':'#f8e4c4';ctx.beginPath();ctx.arc(x,y,22,0,Math.PI*2);ctx.fill();ctx.strokeStyle='#442b2b';ctx.lineWidth=2;ctx.stroke()}
 function renderHoops(){ctx.fillStyle='#74494b';ctx.fillRect(0,470,1000,92);ctx.strokeStyle='#e4a76d';ctx.lineWidth=6;ctx.beginPath();ctx.moveTo(0,470);ctx.lineTo(1000,470);ctx.stroke();ctx.fillStyle='#f7e8c6';ctx.fillRect(420,110,160,120);ctx.strokeStyle='#aa463c';ctx.lineWidth=12;ctx.strokeRect(420,110,160,120);ctx.strokeStyle='#f3a15b';ctx.lineWidth=12;ctx.beginPath();ctx.ellipse(500,234,65,17,0,0,Math.PI*2);ctx.stroke();ctx.strokeStyle='#e2cab5';ctx.lineWidth=2;for(let i=-4;i<=4;i++){ctx.beginPath();ctx.moveTo(500+i*13,249);ctx.lineTo(500+i*10,318);ctx.stroke()}ctx.fillStyle='#c99d61';ctx.font='bold 18px "DM Sans"';ctx.textAlign='center';ctx.fillText('SWISH FOR +3',500,92)}
 function renderSkee(){
 const w=1000,h=562;
