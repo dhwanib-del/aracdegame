@@ -21,7 +21,7 @@ export class Arcade3D{
     this.held=mesh(this.scene,new THREE.SphereGeometry(.25,32,24),game==='hoops'?orange:cream,[0,.55,4]);this.held.castShadow=true;
     this.heldLine=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),new THREE.Vector3()]),new THREE.LineDashedMaterial({color:0xffffff,dashSize:.17,gapSize:.15,opacity:.5,transparent:true}));this.scene.add(this.heldLine);
     this.initPhysics();
-    this.resize();this.resizeObserver=new ResizeObserver(()=>this.resize());this.resizeObserver.observe(canvas.parentElement);
+    this.resize();if(typeof ResizeObserver!=='undefined'){this.resizeObserver=new ResizeObserver(()=>this.resize());this.resizeObserver.observe(canvas.parentElement)}
   }
   async initPhysics(){
     try{await RAPIER.init();if(this.disposed)return;this.world=new RAPIER.World({x:0,y:-9.81,z:0});this.world.integrationParameters.dt=1/60;this.buildColliders();this.ready=true}catch(e){console.error('Physics init failed',e);this.error=e}
@@ -57,11 +57,26 @@ export class Arcade3D{
   update(dt,aim,power,holding,handPos){if(this.disposed)return;this.resizeIfNeeded();const x=(aim-.5)*3.9;const y=holding&&handPos?Math.max(.46,3.6-(handPos.y/562)*3):.5;const z=holding?3.5:4.5;this.held.visible=true;this.held.position.set(x,y,z);
     const p=this.heldLine.geometry.attributes.position;p.setXYZ(0,x,y,z);p.setXYZ(1,x*.26,this.game==='hoops'?2.5:1,-4.1);p.needsUpdate=true;this.heldLine.computeLineDistances();
     if(this.ready){this.acc=(this.acc||0)+Math.min(dt,.05);let loops=0;while(this.acc>=1/60&&loops++<4){this.world.step();this.acc-=1/60}}
-    for(let i=this.shots.length-1;i>=0;i--){const shot=this.shots[i];shot.time+=dt;if(this.ready){const p=shot.body.translation(),v=shot.body.linvel();shot.mesh.position.set(p.x,p.y,p.z);shot.mesh.rotation.x+=dt*3;shot.mesh.rotation.z+=dt*1.7;if(this.game==='hoops'){const h=this.hoop;if(!shot.finished&&shot.prevY>h.y&&p.y<=h.y&&v.y<0&&Math.hypot(p.x-h.x,p.z-h.z)<h.radius-.1){shot.hit=true;shot.finished=true;shot.swish=!shot.wall;this.onResult({hit:true,swish:shot.swish},shot)}}else if(!shot.ramped&&p.z<-3.1&&p.y<1){shot.body.applyImpulse({x:0,y:1.9,z:0},true);shot.ramped=true}if(!shot.finished&&p.z<=-4.9){const valid=this.targets.filter(t=>Math.hypot(p.x-t.x,p.y-t.y)<t.r);shot.hit=valid.length?valid.sort((a,b)=>b.p-a.p)[0].p:0;shot.finished=true;this.onResult({hit:shot.hit},shot)}shot.prevY=p.y}
+    for(let i=this.shots.length-1;i>=0;i--){const shot=this.shots[i];shot.time+=dt;if(this.ready){const p=shot.body.translation(),v=shot.body.linvel();shot.mesh.position.set(p.x,p.y,p.z);shot.mesh.rotation.x+=dt*3;shot.mesh.rotation.z+=dt*1.7;if(this.game==='hoops'){
+        const h=this.hoop;
+        if(!shot.finished&&shot.prevY>h.y&&p.y<=h.y&&v.y<0&&Math.hypot(p.x-h.x,p.z-h.z)<h.radius-.10){
+          shot.hit=true;shot.finished=true;shot.swish=!shot.wall;
+          this.onResult({hit:true,swish:shot.swish},shot);
+        }
+      }else{
+        if(!shot.ramped&&p.z<-3.1&&p.y<1){shot.body.applyImpulse({x:0,y:1.9,z:0},true);shot.ramped=true}
+        if(!shot.finished&&p.z<=-4.9){
+          const valid=this.targets.filter(t=>Math.hypot(p.x-t.x,p.y-t.y)<t.r);
+          shot.hit=valid.length?valid.sort((a,b)=>b.p-a.p)[0].p:0;
+          shot.finished=true;
+          this.onResult({hit:shot.hit},shot);
+        }
+      }
+      shot.prevY=p.y}
       if(shot.time>5||shot.mesh.position.y<-.8||shot.mesh.position.z<-6.5){if(!shot.finished)this.onResult({hit:false},shot);this.scene.remove(shot.mesh);shot.mesh.geometry.dispose();this.world?.removeRigidBody(shot.body);this.shots.splice(i,1)}}
     this.renderer.render(this.scene,this.camera)}
   resizeIfNeeded(){const w=this.canvas.clientWidth,h=this.canvas.clientHeight;if(w!==this._w||h!==this._h){this._w=w;this._h=h;this.resize()}}
   launch(aim,power,velocity={}){if(!this.ready)return false;const x=(aim-.5)*3.9,z=4.2;const body=this.world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(x,.62,z).setCcdEnabled(true));this.world.createCollider(RAPIER.ColliderDesc.ball(.25).setRestitution(.58).setFriction(.6).setDensity(1.6),body);const side=Math.max(-2,Math.min(2,velocity.vx||0));const lift=Math.max(0,-(velocity.vy||0));const p=Math.max(.2,Math.min(1,power));body.setLinvel({x:(-x*.25)+side*.28,y:this.game==='hoops'?6.1+1.35*p+lift*.18:2.7+2*p,z:-(this.game==='hoops'?6.7+1*p:8+2.5*p)},true);body.setAngvel({x:-7,y:2,z:1},true);
     const b=mesh(this.scene,new THREE.SphereGeometry(.25,24,20),this.game==='hoops'?orange:cream,[x,.62,z]);const shot={body,mesh,time:0,finished:false,hit:false,swish:false,wall:false,prevY:.62};this.shots.push(shot);return true}
-  dispose(){this.disposed=true;this.resizeObserver?.disconnect();this.world?.free();this.scene.traverse(o=>{o.geometry?.dispose?.()});this.renderer.dispose()}
+  dispose(){this.disposed=true;this.resizeObserver?.disconnect();try{this.world?.free()}catch(e){console.warn('Physics cleanup:',e)}this.scene.traverse(o=>{o.geometry?.dispose?.()});this.renderer.dispose()}
 }
